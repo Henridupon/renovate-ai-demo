@@ -1,0 +1,84 @@
+name: AI-fix voor Renovate-PR
+
+on:
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-fix-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    name: Laat de AI-agent de build repareren
+    if: >-
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      startsWith(github.event.workflow_run.head_branch, 'renovate/') &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      AI_FIX_SOURCE_BRANCH: ${{ github.event.workflow_run.head_branch }}
+      AI_FIX_TARGET_BRANCH: ${{ github.event.workflow_run.pull_requests[0].base.ref }}
+      AI_FIX_PR: ${{ github.event.workflow_run.pull_requests[0].number }}
+      AI_FIX_AGENT: ${{ vars.AI_FIX_AGENT }}
+      AI_FIX_MAX_ATTEMPTS: ${{ vars.AI_FIX_MAX_ATTEMPTS }}
+      AI_FIX_MAX_TURNS: ${{ vars.AI_FIX_MAX_TURNS }}
+      AI_FIX_MAX_BUDGET_USD: ${{ vars.AI_FIX_MAX_BUDGET_USD }}
+      AI_FIX_ALLOW_DEPENDENCY_FILE_CHANGES: ${{ vars.AI_FIX_ALLOW_DEPENDENCY_FILE_CHANGES }}
+      CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL }}
+      COPILOT_MODEL: ${{ vars.COPILOT_MODEL }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fix-tooling van main apart zetten
+        run: |
+          mkdir -p "$RUNNER_TEMP/ai-fix-tooling"
+          cp scripts/ai-fix.sh .ai/fix-instructions.md "$RUNNER_TEMP/ai-fix-tooling/"
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Build-log ophalen
+        uses: actions/download-artifact@v8
+        with:
+          name: build-log
+          path: ${{ runner.temp }}/build-log
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: 1. Context verzamelen
+        run: bash "$RUNNER_TEMP/ai-fix-tooling/ai-fix.sh" prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: 2. AI-agent laat de build slagen
+        run: bash "$RUNNER_TEMP/ai-fix-tooling/ai-fix.sh" agent
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+
+      - name: 3. Fix pushen en PR becommentariëren
+        run: bash "$RUNNER_TEMP/ai-fix-tooling/ai-fix.sh" publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AI_FIX_PUSH_TOKEN: ${{ secrets.AI_FIX_PUSH_TOKEN }}

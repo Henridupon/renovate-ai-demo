@@ -1,0 +1,110 @@
+trigger:
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  MAVEN_CACHE_FOLDER: $(Pipeline.Workspace)/.m2/repository
+  MAVEN_OPTS: -Dmaven.repo.local=$(MAVEN_CACHE_FOLDER)
+
+stages:
+  - stage: Build
+    displayName: Build en test
+    jobs:
+      - job: maven
+        displayName: mvn verify
+        steps:
+          - task: JavaToolInstaller@0
+            displayName: Java 21
+            inputs:
+              versionSpec: '21'
+              jdkArchitectureOption: x64
+              jdkSourceOption: PreInstalled
+
+          - task: Cache@2
+            displayName: Maven-cache
+            inputs:
+              key: 'maven | "$(Agent.OS)" | **/pom.xml'
+              restoreKeys: |
+                maven | "$(Agent.OS)"
+              path: $(MAVEN_CACHE_FOLDER)
+
+          - bash: |
+              set -o pipefail
+              mvn -B -ntp verify 2>&1 | tee "$(Build.ArtifactStagingDirectory)/build.log"
+            displayName: mvn verify
+
+          - task: PublishTestResults@2
+            displayName: Testresultaten publiceren
+            condition: succeededOrFailed()
+            inputs:
+              testResultsFormat: JUnit
+              testResultsFiles: '**/surefire-reports/TEST-*.xml'
+
+          - publish: $(Build.ArtifactStagingDirectory)/build.log
+            artifact: build-log
+            displayName: Build-log bewaren voor de AI-fix
+            condition: failed()
+
+  - stage: AiFix
+    displayName: AI-fix voor Renovate-PR
+    dependsOn: Build
+    condition: and(failed(), eq(variables['Build.Reason'], 'PullRequest'), startsWith(variables['System.PullRequest.SourceBranch'], 'refs/heads/renovate/'))
+    jobs:
+      - job: fix
+        displayName: Laat de AI-agent de build repareren
+        timeoutInMinutes: 30
+        steps:
+          - checkout: self
+            fetchDepth: 0
+            persistCredentials: false
+
+          - download: current
+            artifact: build-log
+            displayName: Build-log ophalen
+
+          - task: JavaToolInstaller@0
+            displayName: Java 21
+            inputs:
+              versionSpec: '21'
+              jdkArchitectureOption: x64
+              jdkSourceOption: PreInstalled
+
+          - task: Cache@2
+            displayName: Maven-cache
+            inputs:
+              key: 'maven | "$(Agent.OS)" | **/pom.xml'
+              restoreKeys: |
+                maven | "$(Agent.OS)"
+              path: $(MAVEN_CACHE_FOLDER)
+
+          - task: UseNode@1
+            displayName: Node 24 installeren
+            inputs:
+              version: '24.x'
+
+          - bash: |
+              mkdir -p "$(Agent.TempDirectory)/ai-fix-tooling"
+              cp scripts/ai-fix.sh .ai/fix-instructions.md "$(Agent.TempDirectory)/ai-fix-tooling/"
+            displayName: Fix-tooling apart zetten
+
+          - bash: bash "$(Agent.TempDirectory)/ai-fix-tooling/ai-fix.sh" prepare
+            displayName: 1. Context verzamelen
+            env:
+              SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
+          - bash: bash "$(Agent.TempDirectory)/ai-fix-tooling/ai-fix.sh" agent
+            displayName: 2. AI-agent laat de build slagen
+            env:
+              CLAUDE_CODE_OAUTH_TOKEN: $(CLAUDE_CODE_OAUTH_TOKEN)
+              ANTHROPIC_API_KEY: $(ANTHROPIC_API_KEY)
+              ANTHROPIC_FOUNDRY_API_KEY: $(ANTHROPIC_FOUNDRY_API_KEY)
+              COPILOT_GITHUB_TOKEN: $(COPILOT_GITHUB_TOKEN)
+
+          - bash: bash "$(Agent.TempDirectory)/ai-fix-tooling/ai-fix.sh" publish
+            displayName: 3. Fix pushen en PR becommentariëren
+            env:
+              SYSTEM_ACCESSTOKEN: $(System.AccessToken)

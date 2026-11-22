@@ -1,0 +1,37 @@
+trigger: none
+
+schedules:
+  - cron: '0 5 * * 1-5'
+    displayName: Werkdagen om 06:00 (Nederlandse wintertijd)
+    branches:
+      include:
+        - main
+    always: true
+
+pool:
+  vmImage: ubuntu-latest
+
+steps:
+  - checkout: none
+
+  - task: UseNode@1
+    displayName: Node 24 installeren
+    inputs:
+      version: '24.x'
+
+  - bash: |
+      set -euo pipefail
+      if [[ "${RENOVATE_GITHUB_COM_TOKEN:-}" == '$('* ]]; then
+        echo "Geen GITHUB_COM_TOKEN ingesteld: Renovate draait zonder release notes."
+        unset RENOVATE_GITHUB_COM_TOKEN
+      fi
+      npx --yes renovate@44 "$REPO_SLUG"
+    displayName: Renovate draaien
+    env:
+      REPO_SLUG: $(System.TeamProject)/$(Build.Repository.Name)
+      RENOVATE_PLATFORM: azure
+      RENOVATE_ENDPOINT: $(System.CollectionUri)
+      RENOVATE_TOKEN: $(System.AccessToken)
+      RENOVATE_GIT_AUTHOR: Renovate Bot <renovate-bot@example.invalid>
+      RENOVATE_GITHUB_COM_TOKEN: $(GITHUB_COM_TOKEN)
+      LOG_LEVEL: info
