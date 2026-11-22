@@ -35,7 +35,7 @@ public class TokenService {
     }
 
     public String subjectOf(String token) {
-        Claims claims = Jwts.parserBuilder()
+        Claims claims = Jwts.parser()
                 .setSigningKey(key)
                 .build()
                 .parseClaimsJws(token)
